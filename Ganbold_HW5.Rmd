@@ -1,0 +1,232 @@
+---
+title: 'Machine Learning 2019: hw5'
+author: "Mngunsarnai Ganbold"
+date: "11/07/2019"
+output:
+  pdf_document: default
+  pdf: default
+  html_document:
+---
+
+## Homework
+
+Question 1. Attempt a regression tree-based method (not covered in this tutorial) on a reasonable dataset of your choice- can be the same dataset. Explain the results- errors associated with it. 
+
+
+```{r}
+# A regression tree is built through binary recursive partitioning (an iterative process that splits the data into partitions or branches, and then continues splitting each partition into smaller groups) as the method moves up each branch.
+
+
+# I am gonna attempt here Cubist decision trees. It is another ensemble method (less famous than ADA boost). They are constructed like model trees but involve a boosting-like procedure called committees that re rule-like models.
+ 
+
+#install.packages("Cubist")
+library(Cubist)
+
+# load data
+data(longley)
+head(longley)
+str(longley)
+
+# fit model
+fit <- cubist(longley[,1:6], longley[,7])
+
+# summarize the fit
+summary(fit)
+
+# make predictions
+predictions <- predict(fit, longley[,1:6])
+
+# summarize accuracy
+mse <- mean((predictions - longley$Employed)^2)
+print(mse)
+
+```
+
+
+
+Question 2. Attempt both a bagging and boosting method on a reasonable dataset of your choice. Explain the results.
+
+“Bagging” algorithms aim to reduce the complexity of models that overfit the training data. 
+In contrast, boosting is an approach to increase the complexity of models that suffer from high bias, that is, models that underfit the training data.
+
+I will try bagging and boosting with random forest on UCI Breast Cancer set
+And I am curious to compare the results with cross validation (x5 or x10) 
+
+```{r Data import and preparation}
+
+#Loading and preparing data:
+brca <- read.csv("/Users/mungunsarnaiganbold/Desktop/ML_2019/hw5-MSGanbold/data.csv")
+str(brca)
+#all predictors are numeric
+summary(is.na(brca))
+#all NAs are in a last column "X"
+#removing ID and X columns:
+brca <- brca[, -c(1, 33)]
+head(brca)
+brca$diagnosis<- factor(brca$diagnosis, labels =c("B" = "0", "M" = "1") )
+
+#splitting data by ratio:
+set.seed(29)
+
+#split into train and test sets (300 and 206 respectively)
+train = sample(1:nrow(brca), 400)  #row indices for train
+
+# response is already binary so we do not really need to do anything about it
+#train_brca <- brca[train_Id, ] #train values
+#test_brca <- brca[-train_Id, ] #test values
+#dim(train_brca) #455
+#dim(test_brca)   #114
+```
+
+
+Random Forest with Bootstrapping  - bagging the trees to reduce variation and relief overfitiing during model training. Noted that during classification problem, error will be expressed in "err.rate" rather than in MSE as for regression.
+Without hard coping for looping by hand, there is an option to do it with caret::train(method='rf', gridsearch=grid, measurement = "Accuracy", trainCtrl = bootrstrap...)
+
+```{r RF prediction with BOOTSTRAPPING}
+library(randomForest)
+#for predicting response, instead of diagnosis which is binary, I will choose continuous feature
+
+set.seed(29)
+rf.brca_default = randomForest(area_worst~., data = brca, subset=train)
+summary(rf.brca_default)
+#!!!!!summary tree classification model gives us an information about the number of trees, the mean squared residuals (MSR), and the percentage of variance explained
+
+#mtry=24
+#setting a function to iterate RF model with different "mtry" grid: 
+
+set.seed(29)
+oob.err = double(24) # to collect MSE scores while looping 24 times w a model through data during training
+test.err = double(24) # for MSE scores for each m during testing
+
+#Fitting RF to the train dataset while looping 24 times through mtry grid:
+for(mtry in 1:24){
+  fit = randomForest(area_worst~., data = brca, subset=train, mtry=mtry, ntree = 450)  #desired number of trees at first=450
+  oob.err[mtry] = fit$mse[450] #each MSE for 450 trees (1 loop) will go to oob.error 
+  pred = predict(fit, new_data=brca[-train,]) #predict on test dataset w/o response
+  test.err[mtry] = with(brca[-train,], mean( (area_worst - pred)^2 )) #compute test error (MSE) using with()
+  #mean((model-pred)^2)
+}
+
+
+#Visualizing 
+matplot(1:mtry, cbind(test.err, oob.err), pch = 23, col = c("red", "blue"), type = "b", ylab="Mean Squared Error")# why the color are switched?
+legend("topright", legend = c("OOB", "Test"), pch = 23, col = c("red", "blue"))
+```
+m=5 is the optimal performance of the RF regression  trees with high performance and lowest possible cost.  
+Seems that m=5 gives a good balance between bias and variance.
+
+
+Bagging method with CART (classification and regression trees, not forest, simple and usually not high accuracy but suitable for both prediction and classification) algorithm.
+Bagging to reduce variance. I am using above mentioned caret::train for this as an option.
+```{r CART+bagging with train()}
+
+library(caret)
+trainControl <- trainControl(method="repeatedcv", number=10, repeats=3)
+seed <- 29
+metric <- "Accuracy"
+# Bagged CART
+set.seed(seed)
+fit.treebag <- train(diagnosis~., data=brca, subset=train, method="treebag", metric=metric,
+    trControl=trainControl)
+# fit.treebag <- train(diagnosis~., data=train_brca, method="treebag", metric=metric,
+#     trControl=trainControl)
+
+#validating bagged cart:
+set.seed(seed)
+treebag_pred <- predict(fit.treebag, newdata = brca[-train,])
+CM_treebag_pred <- confusionMatrix(treebag_pred, brca[-train,]$diagnosis)
+CM_treebag_pred
+#Accuracy : 94.08%
+```
+
+
+Bagging with RF in {caret}:
+
+```{r RF+bagging with train()}
+# Bagging with Random Forest:
+set.seed(seed)
+fit.rf <- train(diagnosis~., data=brca[train,], method="rf", metric=metric, trControl=trainControl)
+# bagging training model and summarizing results
+bagging_Results <- resamples(list(treebag=fit.treebag, rf=fit.rf)) #fit.treebag is the bagged rf model
+summary(bagging_Results)
+dotplot(bagging_Results)
+# Actually, fit.rf training model by default gives a higher training accuracy than fit.treebag. 
+# But, the bias of bagged model is higher.This might give less testing errors in validation than the model by default. Let's check```
+
+#validating fit.rf:
+set.seed(seed)
+rf_predd <- predict(fit.rf, newdata = brca[-train,])  #114
+summary(rf_predd) #114
+confusionMatrix(rf_predd, brca[-train,]$diagnosis)
+# Validation accuracy of rf.fit is Accuracy : 96.3%
+# Sensitivity is higher than specificity
+
+
+#validating fit.treebag:
+set.seed(seed)
+treebag_predd <- predict(fit.treebag, newdata = brca[-train,])  #114
+summary(treebag_predd) #114
+confusionMatrix(treebag_predd, brca[-train,]$diagnosis)
+# Validation accuracy of bagged rf is 90.4% 
+
+
+#The bagged RF trees gave actually lower training accuracy than the models w/o bagging. 
+```
+
+
+Now boosting. Let's look at boosting algorithms suitable for aiding underfit models' fits.
+
+```{r Boosting with C5.0}
+
+# Boosting with C 5.0 method:
+#install.packages("C50")
+library(C50)
+
+#parameters:
+set.seed(seed)
+trainControl <- trainControl(method="repeatedcv", number=10, repeats=3)
+metric <- "Accuracy"
+
+
+set.seed(seed)
+fit.c50 <- train(diagnosis~., data=brca[train,], method="C5.0", metric=metric,
+    trControl=trainControl)
+fit.c50
+#Accuracy was used to select the optimal model using the largest value.
+#The final values used for the model were trials = 20, model = rules and winnow = FALSE.
+#Accuracy 0.9419367  Kappa 0.8749778
+c50_predicted <-  predict(fit.c50, newdata=brca[-train,])
+summary(c50_predicted)
+
+confusionMatrix(c50_predicted, brca[-train,]$diagnosis)
+# validation accuracy 96.65% - the highest so far. 
+# So far, increasing feature dimensionality by boosting gave higher accuracies than bagging.
+## accuracy 96.65%
+```
+
+```{r}
+# Stochastic Gradient Boosting - another method to boost.
+
+#parameters:
+set.seed(seed)
+trainControl <- trainControl(method="repeatedcv", number=10, repeats=3)
+metric <- "Accuracy"
+set.seed(seed)
+fit.gbm <- train(diagnosis~., data=brca[train,], method="gbm", metric=metric,
+    trControl=trainControl, verbose=FALSE)
+# summarize results
+boostingResults <- resamples(list(c5.0=fit.c50, gbm=fit.gbm))
+summary(boostingResults)
+dotplot(boostingResults)
+
+#validating:
+gbm_predicted <- predict(fit.gbm, newdata = brca[-train,])
+summary(gbm_predicted)
+confusionMatrix(gbm_predicted, brca[-train,]$diagnosis)
+#Two boosting methods demonstrate varying accuracies. Boosting in general is the method to improve accuracy and relief bias.
+```
+
+That would be all for this time.
+
+Thank you!
